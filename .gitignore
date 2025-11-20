@@ -1,0 +1,51 @@
+# R 相关文件
+.Rhistory
+.RData
+.Rproj.user
+*.Rproj
+
+# 输出文件夹
+outputs/
+*.png
+*.pdf
+*.tiff
+
+# 缓存文件夹
+cache/
+
+# 临时文件
+*.tmp
+*.log
+
+# RData 文件（可选，如果文件较大）
+*.RData
+*.rda
+
+# CSV 输出（可选）
+# *.csv
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE 相关
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# LaTeX 相关（如果有报告）
+*.aux
+*.log
+*.out
+*.synctex.gz
+
+# 数据文件（如果不希望提交原始数据）
+# 01_Data_Prep/data/**/*.tif
+# 01_Data_Prep/data/**/*.shp
+# 01_Data_Prep/data/**/*.dbf
+# 01_Data_Prep/data/**/*.shx
+# 01_Data_Prep/data/**/*.prj
+
