@@ -2,7 +2,7 @@
 
 **Authors**: Chaoan Li, Yinuo Zhu  
 **Course**: STAT 647 Spatial Statistics  
-**Institution**: Texas A&M University   
+**Institution**: Texas A&M University  
 **Date**: December 2025
 
 ---
@@ -24,6 +24,7 @@ where $Z(s)$ is the bottom elevation at location $s$.
 | Shoreline DEM | USGS | 30m | Elevation anchor points |
 | Water Occurrence | Google Surface Water | 30m | Inundation frequency |
 | Permanent Water Mask | Landsat | 30m | Deep water constraint |
+| Dam Point | Manual digitization | Point | Minimum elevation anchor |
 
 ---
 
@@ -119,33 +120,58 @@ $$\text{best} = \arg\min_m \text{MAE}_m$$
 ### 4.1 Pipeline Overview
 
 ```
-Data Loading → Mesh Construction → SPDE Definition → INLA Fitting
-    ↓
-Bathymetry Reconstruction → Calibration Framework → A-E Curve
+Step 1: load_and_prep_data()      → Load DEM, water frequency, permanent water
+Step 2: build_observation_data()  → Construct binomial observations + dam constraint
+Step 3: plot_original_data()      → Visualize input data
+Step 4: build_mesh()              → SPDE triangulation
+Step 5: plot_mesh()               → Visualize mesh
+Step 6: define_spde()             → PC priors for spatial field
+Step 7: build_projection_matrices() → A matrices for observations
+Step 8: build_inla_stacks()       → Combine data for INLA
+Step 9: fit_inla_model()          → Binomial INLA fitting
+Step 10: extract_spde_hyperpar()  → Get range/sigma posteriors
+Step 11: reconstruct_bathymetry() → Project + calibrate (4 methods)
+Step 12: plot_bathymetry()        → Visualize mean/SD maps
+Step 13: compute_ae_curve()       → Calculate A-E relationship
+Step 14: plot_ae_curve()          → Compare with validation
+Step 15: plot_calibration_comparison() → 4-method comparison
 ```
 
 ### 4.2 Core Functions
 
 | Module | Function | Purpose |
 |--------|----------|---------|
-| `data_generation.R` | `load_and_prep_data()` | Load and align rasters |
-| `data_generation.R` | `build_observation_data()` | Construct binomial observations |
-| `mesh_setup.R` | `build_mesh()` | SPDE triangulation |
-| `spde_definition.R` | `define_spde()` | PC priors for spatial field |
-| `fit_inlabru_model.R` | `fit_inla_model()` | INLA stack and fitting |
-| `reconstruct_map.R` | `reconstruct_bathymetry()` | Posterior projection + calibration |
-| `calibration_module.R` | `run_calibration_framework()` | 4-method comparison |
-| `ae_curve_ppd.R` | `compute_ae_curve()` | A-E curve from bathymetry |
+| `data_generation.R` | `load_and_prep_data()` | Load and align rasters, CRS projection |
+| `data_generation.R` | `build_observation_data()` | Construct binomial obs + dam point constraint |
+| `data_generation.R` | `plot_original_data()` | Visualize DEM, water freq, permanent water |
+| `mesh_setup.R` | `build_mesh()` | Constrained Delaunay triangulation |
+| `mesh_setup.R` | `plot_mesh()` | Mesh visualization with lake boundary |
+| `spde_definition.R` | `define_spde()` | PC priors on range/sigma |
+| `spde_definition.R` | `build_projection_matrices()` | A matrices (sparse, barycentric) |
+| `fit_inlabru_model.R` | `build_inla_stacks()` | Stack for binomial likelihood |
+| `fit_inlabru_model.R` | `fit_inla_model()` | INLA fitting with verbose output |
+| `fit_inlabru_model.R` | `extract_spde_hyperpar()` | Transform θ to (ρ, σ) |
+| `reconstruct_map.R` | `reconstruct_bathymetry()` | Posterior projection + calibration framework |
+| `reconstruct_map.R` | `plot_bathymetry()` | Mean/SD raster visualization |
+| `calibration_module.R` | `run_calibration_framework()` | 4-method comparison + auto-select |
+| `calibration_module.R` | `compute_ae_metrics()` | MAE, RMSE, R², MAPE, NSE |
+| `calibration_module.R` | `plot_calibration_comparison()` | 4-method AE curve comparison |
+| `ae_curve_ppd.R` | `compute_ae_curve()` | A-E curve from calibrated bathymetry |
+| `ae_curve_ppd.R` | `plot_ae_curve()` | Compare predicted vs. true AE |
 
 ### 4.3 Key Parameters
 
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| `max_edge` | (100m, 500m) | Balance resolution and computation |
-| `prior_range` | (500m, 0.5) | Median range ~ lake scale |
-| `prior_sigma` | (1m, 0.01) | Conservative variance bound |
-| `N_trials` | 100 | Binomial discretization |
-| `n_segments` | 4 | Piecewise calibration segments |
+| Parameter | Value | Location | Rationale |
+|-----------|-------|----------|-----------|
+| `max_edge` | (100m, 500m) | `build_mesh()` | Inner/outer mesh resolution |
+| `cutoff` | 50m | `build_mesh()` | Minimum node spacing |
+| `offset` | (100m, 500m) | `build_mesh()` | Inner/outer boundary buffer |
+| `prior_range` | (500m, 0.5) | `define_spde()` | P(ρ < 500) = 0.5 |
+| `prior_sigma` | (1m, 0.01) | `define_spde()` | P(σ > 1) = 0.01 |
+| `N_trials` | 100 | `build_observation_data()` | Binomial discretization |
+| `dam_point_weight` | 50 | `build_observation_data()` | Dam point replication for anchoring |
+| `n_segments` | 4 | `calibration_piecewise()` | Piecewise calibration segments |
+| `elevation_step` | 0.1m | `compute_ae_curve()` | AE curve resolution |
 
 ---
 
@@ -167,164 +193,22 @@ Bathymetry Reconstruction → Calibration Framework → A-E Curve
 
 The predicted A-E curve closely matches TWDB survey data across the full elevation range. Piecewise calibration effectively captures the nonlinear relationship between model-predicted depth and true elevation.
 
----
+### 5.3 Output Files
 
-## 6. Presentation Outline
-
-### Slide 1: Title
-
-**Lake Bathymetry Reconstruction via INLA-SPDE**
-
-Chaoan Li, Yinuo Zhu  
-Princeton University | STAT 647 | December 2025
-
----
-
-### Slide 2: Motivation
-
-**Problem**: Estimate lake depth from satellite observations
-
-**Applications**:
-- Reservoir capacity estimation
-- Flood risk assessment
-- Drought monitoring
-
-**Challenge**: No direct underwater measurements available
-
----
-
-### Slide 3: Data
-
-Three raster inputs (30m resolution):
-
-| Type | Description |
+| File | Description |
 |------|-------------|
-| Shoreline DEM | Elevation at water edge |
-| Water Frequency | Fraction of time inundated |
-| Permanent Water | Always-wet regions |
-
-Study sites: Belton Lake, E.V. Spence Reservoir (Texas)
-
----
-
-### Slide 4: Model
-
-**Latent field**: $Z(s) \sim \text{GRF with Matérn covariance}$
-
-**SPDE approximation**: 
-$$(\kappa^2 - \Delta)^{\alpha/2} Z = \mathcal{W}$$
-
-**Observation model**:
-$$Y \sim \text{Binomial}(N, p), \quad \text{logit}(p) = \alpha + f(s)$$
-
-**Priors**: PC priors on range and sigma
+| `Belton_original_data.png` | Input data visualization |
+| `Belton_mesh.png` | SPDE mesh with 1,523 vertices |
+| `Belton_bathymetry_mean.png` | Posterior mean elevation |
+| `Belton_bathymetry_sd.png` | Posterior standard deviation |
+| `Belton_ae_curve.png` | Predicted vs. true AE curve |
+| `Belton_calibration_comparison.png` | 4-method calibration comparison |
+| `Belton_ae_curve.csv` | Numerical AE data |
+| `Belton_results.RData` | Full R objects for reproducibility |
 
 ---
 
-### Slide 5: Mesh and SPDE
-
-- Constrained Delaunay triangulation
-- 1523 vertices, adaptive resolution
-- Inner edge: 100m, outer: 500m
-
-[Figure: Mesh overlaid on lake boundary]
-
----
-
-### Slide 6: Calibration
-
-**Issue**: Model gives relative depth, need absolute elevation
-
-**Solution**: Piecewise affine calibration
-
-$$Z^{(k)} = a_k + b_k \cdot f, \quad k = 1, \ldots, 4$$
-
-**Comparison**:
-
-| Method | MAE (km²) |
-|--------|-----------|
-| Regression | 23.40 |
-| Endpoint | 4.23 |
-| Hybrid | 4.23 |
-| **Piecewise** | **1.45** |
-
----
-
-### Slide 7: Bathymetry Results
-
-**Posterior mean elevation**:
-- Range: 147 – 181 m
-- Deeper regions (blue) near dam
-- Shallow areas (yellow) near shore
-
-**Posterior uncertainty**:
-- Higher in deep water (far from observations)
-- Lower near shoreline constraints
-
-[Figure: Bathymetry mean and SD maps]
-
----
-
-### Slide 8: A-E Curve Validation
-
-**Predicted vs. True**:
-- Black: TWDB survey data
-- Blue: INLA-SPDE prediction
-
-**Metrics**:
-- MAE = 1.45 km²
-- R² = 0.998
-- Elevation: 147 – 181 m
-- Area: 0 – 50 km²
-
-[Figure: A-E curve comparison]
-
----
-
-### Slide 9: Model Diagnostics
-
-**Hyperparameters**:
-- Range: 1238 m (lake-scale correlation)
-- Sigma: 29.9 m (depth variation)
-
-**Calibration quality**:
-- 4-segment piecewise fit
-- Captures nonlinear shape
-
-**Uncertainty**:
-- Increases with distance from shore
-- 95% credible intervals available
-
----
-
-### Slide 10: Conclusions
-
-**Findings**:
-1. INLA-SPDE effectively reconstructs bathymetry from water frequency
-2. Piecewise calibration reduces MAE by 97% vs. regression
-3. Final MAE = 1.45 km² (R² = 0.998)
-
-**Contributions**:
-- Integration of SPDE spatial modeling with remote sensing
-- Automated calibration framework with model selection
-- Reproducible workflow for any lake
-
-**Limitations**:
-- Requires validation data for calibration
-- Assumes stationary spatial field
-
----
-
-### Slide 11: References
-
-1. Rue, H., Martino, S., & Chopin, N. (2009). INLA. *JRSSB*.
-2. Lindgren, F., Rue, H., & Lindström, J. (2011). SPDE approach. *JRSSB*.
-3. Simpson, D. et al. (2017). PC priors. *Statistical Science*.
-4. Pekel, J.F. et al. (2016). Global surface water. *Nature*.
-
----
-
-## 7. References
+## 6. References
 
 1. **Rue, H., Martino, S., & Chopin, N.** (2009). Approximate Bayesian inference for latent Gaussian models by using integrated nested Laplace approximations. *Journal of the Royal Statistical Society: Series B*, 71(2), 319-392.
 
@@ -333,8 +217,6 @@ $$Z^{(k)} = a_k + b_k \cdot f, \quad k = 1, \ldots, 4$$
 3. **Simpson, D., Rue, H., Riebler, A., Martins, T. G., & Sørbye, S. H.** (2017). Penalising model component complexity: A principled, practical approach to constructing priors. *Statistical Science*, 32(1), 1-28.
 
 4. **Pekel, J. F., Cottam, A., Gorelick, N., & Belward, A. S.** (2016). High-resolution mapping of global surface water and its long-term changes. *Nature*, 540(7633), 418-422.
-
-5. **Gao, H.** (2015). Satellite remote sensing of large lakes and reservoirs: from elevation and area to storage. *Wiley Interdisciplinary Reviews: Water*, 2(2), 147-157.
 
 ---
 
@@ -346,21 +228,22 @@ $$Z^{(k)} = a_k + b_k \cdot f, \quad k = 1, \ldots, 4$$
 
 **A-E curve offset**:
 - Verify dam point coordinates
-- Increase dam point weight in `build_observation_data()`
+- Increase `dam_point_weight` in `build_observation_data()`
 
-**High uncertainty**:
-- Add more shoreline observations
-- Refine mesh resolution in deep water
+**High uncertainty in deep water**:
+- Increase shoreline observations
+- Decrease `max_edge[1]` for finer mesh
 
 ---
 
-## Appendix B: Parameter Tuning
+## Appendix B: Parameter Tuning Guide
 
 | Parameter | Range | Effect |
 |-----------|-------|--------|
-| `prior_range[1]` | 200-1000m | Spatial smoothness |
-| `max_edge[1]` | 50-200m | Resolution |
-| `n_segments` | 3-6 | Calibration flexibility |
+| `prior_range[1]` | 200-1000m | Larger = smoother field |
+| `max_edge[1]` | 50-200m | Smaller = higher resolution |
+| `dam_point_weight` | 20-100 | Larger = stronger anchoring |
+| `n_segments` | 3-6 | More = flexible calibration |
 
 ---
 
