@@ -1,12 +1,12 @@
 ################################################################################
-# 主运行脚本：湖泊 Area-Elevation 曲线估计
-# Main Runner Script: Lake Area-Elevation Curve Estimation
+# Lake Area-Elevation Curve Estimation via INLA-SPDE
 #
-# 项目：使用 INLA + SPDE 从多源栅格数据重建湖底测深图并计算 A-E 曲线
-# 
-# 作者：Cursor AI + User
-# 日期：2025
+# Authors: Chaoan Li, Yinuo Zhu
+# Course: STAT 647 Spatial Statistics, Princeton University
+# Date: December 2025
 ################################################################################
+
+
 
 # ============================
 # 0. 清理环境和加载包
@@ -79,74 +79,28 @@ if (!dir.exists(output_dir)) {
 }
 
 # ============================
-# 2. 选择要分析的湖泊
+# 2. 湖泊配置
 # ============================
 
 cat("================================================================================\n")
-cat("2. 选择要分析的湖泊\n")
+cat("2. Belton Lake Configuration\n")
 cat("================================================================================\n\n")
 
-cat("可用湖泊:\n")
-cat("  1. Belton Lake\n")
-cat("  2. E.V. Spence Reservoir\n")
-cat("  3. Both (两个湖泊)\n\n")
+# Belton Lake 数据路径
+lake_info <- list(
+  name = "Belton",
+  dem_path = file.path(data_dir, "DEM", "Belton_DEM_100m_Buffer.tif"),
+  water_freq_path = file.path(data_dir, "occurrence", 
+                               "Belton_GSW_Occurrence_Buffer100m.tif"),
+  perm_water_path = file.path(data_dir, "permanent_water", 
+                               "Belton_Min_Permanent_Water.shp"),
+  dam_point_path = file.path(data_dir, "DAM_point", "Belton_dam.shp"),
+  true_ae_path = "04_Validation/Belton_AVE.csv"
+)
 
-# 用户选择（可以修改这里）
-lake_choice <- 1  # 1 = Belton, 2 = E.V. Spence, 3 = Both
+lakes_to_process <- list(lake_info)
 
-# 根据选择设置湖泊列表
-if (lake_choice == 1) {
-  lakes_to_process <- list(
-    list(
-      name = "Belton",
-      dem_path = file.path(data_dir, "DEM", "Belton_DEM_100m_Buffer.tif"),
-      water_freq_path = file.path(data_dir, "occurrence", 
-                                   "Belton_GSW_Occurrence_Buffer100m.tif"),
-      perm_water_path = file.path(data_dir, "permanent_water", 
-                                   "Belton_Min_Permanent_Water.shp"),
-      dam_point_path = file.path(data_dir, "DAM_point", "Belton_dam.shp"),
-      true_ae_path = "04_Validation/Belton_AVE.csv"
-    )
-  )
-} else if (lake_choice == 2) {
-  lakes_to_process <- list(
-    list(
-      name = "EVSpence",
-      dem_path = file.path(data_dir, "DEM", "EVSpence_DEM_200m_Buffer.tif"),
-      water_freq_path = file.path(data_dir, "occurrence", 
-                                   "EVSpence_GSW_Occurrence_Buffer200m.tif"),
-      perm_water_path = file.path(data_dir, "permanent_water", 
-                                   "EVSpence_Reservoir_Min_Permanent_Water.shp"),
-      dam_point_path = file.path(data_dir, "DAM_point", "EVSpence_dam.shp"),
-      true_ae_path = "04_Validation/EVspence_AVE.csv"
-    )
-  )
-} else {
-  lakes_to_process <- list(
-    list(
-      name = "Belton",
-      dem_path = file.path(data_dir, "DEM", "Belton_DEM_100m_Buffer.tif"),
-      water_freq_path = file.path(data_dir, "occurrence", 
-                                   "Belton_GSW_Occurrence_Buffer100m.tif"),
-      perm_water_path = file.path(data_dir, "permanent_water", 
-                                   "Belton_Min_Permanent_Water.shp"),
-      dam_point_path = file.path(data_dir, "DAM_point", "Belton_dam.shp"),
-      true_ae_path = "04_Validation/Belton_AVE.csv"
-    ),
-    list(
-      name = "EVSpence",
-      dem_path = file.path(data_dir, "DEM", "EVSpence_DEM_200m_Buffer.tif"),
-      water_freq_path = file.path(data_dir, "occurrence", 
-                                   "EVSpence_GSW_Occurrence_Buffer200m.tif"),
-      perm_water_path = file.path(data_dir, "permanent_water", 
-                                   "EVSpence_Reservoir_Min_Permanent_Water.shp"),
-      dam_point_path = file.path(data_dir, "DAM_point", "EVSpence_dam.shp"),
-      true_ae_path = "04_Validation/EVspence_AVE.csv"
-    )
-  )
-}
-
-cat(sprintf("将处理 %d 个湖泊\n\n", length(lakes_to_process)))
+cat("Processing: Belton Lake\n\n")
 
 # ============================
 # 3. 主循环：处理每个湖泊
@@ -276,6 +230,22 @@ for (lake_idx in seq_along(lakes_to_process)) {
     save_path = file.path(output_dir, sprintf("%s_ae_curve.png", lake_name)),
     true_ae_path = lake_info$true_ae_path  # 添加真实A-E曲线用于验证对比
   )
+  
+  # ---- 3.11.5 生成校准方法比较图 ----
+  if (!is.null(bathy_result$calibration_results)) {
+    cat("\nGenerating calibration comparison plot...\n")
+    source("03_Result_Analysis/calibration_module.R")
+    
+    plot_calibration_comparison(
+      calib_results = bathy_result$calibration_results,
+      data_list = data_list,
+      save_path = file.path(output_dir, sprintf("%s_calibration_comparison.png", lake_name))
+    )
+    
+    # 输出校准报告
+    calib_report <- generate_calibration_report(bathy_result$calibration_results)
+    cat("\n", calib_report, "\n")
+  }
   
   # ---- 3.12（可选）计算带不确定性的 A-E 曲线 ----
   # 注意：这一步会比较耗时，如果数据量大可以跳过或减少样本数

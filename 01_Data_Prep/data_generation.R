@@ -1,6 +1,6 @@
 ################################################################################
-# 数据加载与预处理模块
 # Data Loading and Preprocessing Module
+# Authors: Chaoan Li, Yinuo Zhu | STAT 647, Texas A&M University
 ################################################################################
 
 #' 加载和预处理栅格数据
@@ -332,19 +332,41 @@ build_observation_data <- function(data_list,
   
   if (use_shore_elev) {
     # 使用岸边区域的 DEM 作为观测
-    # 定义"岸边"为：有 DEM 值但不是永久水域的区域
+    # 改进策略：只使用接近水域的低海拔岸边点，避免高地污染校准
     
-    # 创建岸边 mask：DEM 有效 且 非永久水域
+    # 基础岸边 mask：DEM 有效 且 非永久水域
     shore_mask <- !is.na(dem) & (is.na(perm_water) | perm_water == 0)
     
-    # 提取岸边像元
-    elev_coords <- xyFromCell(dem, which(values(shore_mask)))
-    elev_values <- values(dem)[values(shore_mask)]
+    # 提取初步岸边像元
+    elev_coords_all <- xyFromCell(dem, which(values(shore_mask)))
+    elev_values_all <- values(dem)[values(shore_mask)]
     
     # 去除 NA
-    valid_idx <- !is.na(elev_values)
-    elev_coords <- elev_coords[valid_idx, ]
-    elev_values <- elev_values[valid_idx]
+    valid_idx <- !is.na(elev_values_all)
+    elev_coords_all <- elev_coords_all[valid_idx, ]
+    elev_values_all <- elev_values_all[valid_idx]
+    
+    # ===== 修复：使用统计准则（3σ）去除异常值 =====
+    # 理论依据：3σ准则是统计学标准异常值检测方法
+    # 保留所有在均值±3标准差范围内的观测
+    # 这比之前的"最低10%"更有统计依据
+    if (length(elev_values_all) > 10) {
+      z_scores <- abs(scale(elev_values_all))
+      keep_idx <- z_scores < 3  # 3σ准则
+      
+      n_removed <- sum(!keep_idx)
+      if (n_removed > 0) {
+        cat(sprintf("   Removing %d outliers (%.1f%%) using 3σ criterion\n",
+                    n_removed, 100 * n_removed / length(elev_values_all)))
+      }
+      
+      elev_coords <- elev_coords_all[keep_idx, ]
+      elev_values <- elev_values_all[keep_idx]
+    } else {
+      # 样本太少，不进行过滤
+      elev_coords <- elev_coords_all
+      elev_values <- elev_values_all
+    }
     
     elev_df <- data.frame(
       x = elev_coords[, 1],
@@ -352,8 +374,8 @@ build_observation_data <- function(data_list,
       elev = elev_values
     )
     
-    cat(sprintf("   Elevation observations from shoreline: %d points\n", 
-                nrow(elev_df)))
+    cat(sprintf("   Total shore points: %d\n", length(elev_values_all)))
+    cat(sprintf("   Shore points after 3σ filtering: %d\n", nrow(elev_df)))
     cat(sprintf("   Elevation range: %.2f to %.2f m\n", 
                 min(elev_df$elev), max(elev_df$elev)))
   } else {

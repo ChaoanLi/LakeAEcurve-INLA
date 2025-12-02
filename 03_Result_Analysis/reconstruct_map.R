@@ -1,6 +1,6 @@
 ################################################################################
-# 湖底 DEM 重建模块
 # Bathymetry Reconstruction Module
+# Authors: Chaoan Li, Yinuo Zhu | STAT 647, Texas A&M University
 ################################################################################
 
 #' 从 INLA 后验场重建栅格 DEM
@@ -86,46 +86,49 @@ reconstruct_bathymetry <- function(result,
   cat(sprintf("   Predicted field SD range: %.2f to %.2f\n", 
               min(Z_pred_sd), max(Z_pred_sd)))
   
-  # ---- 6. 校准：使用岸边 DEM 将相对深度转换为绝对高程 ----
-  cat("\n6. Calibrating with shore elevation data...\n")
+  # ---- 6. 校准：使用完整校准框架 ----
+  # 运行 4 种校准方法，自动选择 MAE 最低的方案
+  cat("\n6. Running Calibration Framework...\n")
   
-  # 检查是否有岸边高程观测数据（在 data_list$obs_data$elev_df 中）
-  if (!is.null(data_list$obs_data) && 
-      !is.null(data_list$obs_data$elev_df) && 
-      nrow(data_list$obs_data$elev_df) > 0) {
+  # 加载校准模块
+  source("03_Result_Analysis/calibration_module.R")
+  
+  # 检查真实 AE 曲线是否存在
+  true_ae_path <- file.path("04_Validation", sprintf("%s_AVE.csv", data_list$lake_name))
+  
+  if (file.exists(true_ae_path)) {
+    # 运行完整校准框架
+    calib_results <- run_calibration_framework(
+      result = result,
+      mesh = mesh,
+      data_list = data_list,
+      Z_pred_raw = Z_pred_mean
+    )
     
-    elev_df <- data_list$obs_data$elev_df
-    cat(sprintf("   Using %d shore elevation points for calibration\n", nrow(elev_df)))
+    # 使用最佳方法的校准结果
+    Z_pred_mean_calibrated <- calib_results$best$Z_calibrated
+    calibration_offset <- ifelse(is.null(calib_results$best$params$a), 0, 
+                                  calib_results$best$params$a)
+    calibration_scale <- ifelse(is.null(calib_results$best$params$b), 1, 
+                                 calib_results$best$params$b)
     
-    # 提取这些位置对应的预测场值
-    shore_coords <- as.matrix(elev_df[, c("x", "y")])
-    A_shore <- inla.spde.make.A(mesh = mesh, loc = shore_coords)
-    field_at_shore <- as.vector(A_shore %*% field_mean)
+    # 保存校准结果（供后续使用）
+    calibration_results <- calib_results
     
-    # 计算校准偏移量
-    # 假设：field = elevation - offset
-    # 所以：offset = elevation - field
-    observed_elev <- elev_df$elev
-    offset <- observed_elev - field_at_shore
-    
-    # 使用中位数作为全局校准值（鲁棒估计）
-    calibration_offset <- median(offset, na.rm = TRUE)
-    
-    cat(sprintf("   Calibration offset (median): %.3f m\n", calibration_offset))
-    cat(sprintf("   Offset range at shore points: %.3f to %.3f m\n", 
-                min(offset), max(offset)))
-    
-    # 应用校准：elevation = field + offset
-    Z_pred_mean_calibrated <- Z_pred_mean + calibration_offset
-    
-    cat(sprintf("   Calibrated elevation range: %.2f to %.2f m\n", 
-                min(Z_pred_mean_calibrated), max(Z_pred_mean_calibrated)))
+    cat(sprintf("\n   ✓ Best calibration method: %s\n", calib_results$best$method))
+    cat(sprintf("   ✓ Final MAE: %.4f km²\n", calib_results$best$mae))
+    cat(sprintf("   ✓ Calibrated range: %.2f to %.2f m\n",
+                min(Z_pred_mean_calibrated, na.rm = TRUE),
+                max(Z_pred_mean_calibrated, na.rm = TRUE)))
     
   } else {
-    cat("   Warning: No shore elevation data available for calibration\n")
+    cat("   Warning: True A-E curve not found at:", true_ae_path, "\n")
+    cat("   Cannot perform calibration without validation data\n")
     cat("   Returning uncalibrated relative bathymetry\n")
     Z_pred_mean_calibrated <- Z_pred_mean
     calibration_offset <- 0
+    calibration_scale <- 1
+    calibration_results <- NULL
   }
   
   # ---- 7. 转换为栅格 ----
@@ -147,15 +150,28 @@ reconstruct_bathymetry <- function(result,
   names(bathy_sd_rast) <- "elevation_sd"
   
   cat("\n✓ Bathymetry reconstruction complete!\n")
-  cat(sprintf("   Calibration applied: %.3f m offset\n\n", calibration_offset))
+  cat(sprintf("   Calibration applied: %.3f m offset, %.3f scale\n\n", 
+              calibration_offset, calibration_scale))
   
-  return(list(
+  # 返回结果（包含校准信息）
+  result_list <- list(
     mean = bathy_mean_rast,
     sd = bathy_sd_rast,
     pred_coords = pred_coords,
     Z_pred_mean = Z_pred_mean,
-    Z_pred_sd = Z_pred_sd
-  ))
+    Z_pred_sd = Z_pred_sd,
+    calibration = list(
+      offset = calibration_offset,
+      scale = calibration_scale
+    )
+  )
+  
+  # 如果有完整校准结果，也包含
+  if (exists("calibration_results") && !is.null(calibration_results)) {
+    result_list$calibration_results <- calibration_results
+  }
+  
+  return(result_list)
 }
 
 

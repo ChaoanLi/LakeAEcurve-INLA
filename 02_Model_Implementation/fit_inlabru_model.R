@@ -1,6 +1,6 @@
 ################################################################################
-# INLA 模型拟合模块
 # INLA Model Fitting Module
+# Authors: Chaoan Li, Yinuo Zhu | STAT 647, Texas A&M University
 ################################################################################
 
 #' 构建 INLA stacks（多 likelihood 情况）

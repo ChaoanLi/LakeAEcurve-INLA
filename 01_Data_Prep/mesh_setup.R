@@ -1,6 +1,6 @@
 ################################################################################
-# SPDE Mesh 构建模块
 # SPDE Mesh Construction Module
+# Authors: Chaoan Li, Yinuo Zhu | STAT 647, Texas A&M University
 ################################################################################
 
 #' 构建 INLA SPDE mesh

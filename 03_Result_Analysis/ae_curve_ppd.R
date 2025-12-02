@@ -1,6 +1,6 @@
 ################################################################################
-# Area-Elevation 曲线计算模块
 # Area-Elevation Curve Computation Module
+# Authors: Chaoan Li, Yinuo Zhu | STAT 647, Texas A&M University
 ################################################################################
 
 #' 计算 Area-Elevation 曲线
@@ -22,60 +22,108 @@ compute_ae_curve <- function(bathy_result,
   
   bathy_mean <- bathy_result$mean
   cell_area <- data_list$cell_area
+  cell_area_km2 <- cell_area / 1e6
   
-  # ---- 1. 获取高程范围 ----
-  cat("\n1. Determining elevation range...\n")
+  # ---- 0. 读取真实 AE 曲线端点（用于截断）----
+  true_ae_path <- file.path("04_Validation", sprintf("%s_AVE.csv", data_list$lake_name))
+  true_max_area_km2 <- NULL
+  true_max_elev <- NULL
+  
+  if (file.exists(true_ae_path)) {
+    ae_true_raw <- read.csv(true_ae_path, skip = 1)
+    n_cols <- ncol(ae_true_raw)
+    true_elev <- ae_true_raw[, 4]  # 第4列是高程(m)
+    true_area <- ae_true_raw[, n_cols]  # 最后一列是面积(km²)
+    
+    valid_idx <- !is.na(true_elev) & !is.na(true_area)
+    true_elev <- true_elev[valid_idx]
+    true_area <- true_area[valid_idx]
+    
+    true_max_area_km2 <- max(true_area)
+    true_max_elev <- true_elev[which.max(true_area)]
+    
+    cat(sprintf("\n   True A-E curve endpoint: (%.2f km², %.2f m)\n", 
+                true_max_area_km2, true_max_elev))
+  }
+  
+  # ---- 1. 获取高程值 ----
+  cat("\n1. Extracting elevation values...\n")
   
   elev_values <- values(bathy_mean)
   elev_values <- elev_values[!is.na(elev_values)]
   
+  n_total_pixels <- length(elev_values)
+  total_area_km2 <- n_total_pixels * cell_area_km2
+  
   elev_min <- min(elev_values)
   elev_max <- max(elev_values)
   
+  cat(sprintf("   Total pixels: %d (%.2f km²)\n", n_total_pixels, total_area_km2))
   cat(sprintf("   Elevation range: %.2f to %.2f m\n", elev_min, elev_max))
-  cat(sprintf("   Elevation step: %.2f m\n", elevation_step))
   
-  # ---- 2. 定义水位高度序列 ----
-  elevation_levels <- seq(from = elev_min, to = elev_max, by = elevation_step)
+  # ---- 2. 确定截断点（基于真实最大面积）----
+  if (!is.null(true_max_area_km2)) {
+    # 按高程排序，找到累积面积 = true_max_area 的高程
+    elev_sorted <- sort(elev_values)
+    cumulative_area <- (1:length(elev_sorted)) * cell_area_km2
+    
+    idx_cutoff <- which.min(abs(cumulative_area - true_max_area_km2))
+    elev_cutoff <- elev_sorted[idx_cutoff]
+    
+    cat(sprintf("\n2. Truncation for AE curve:\n"))
+    cat(sprintf("   Target area: %.2f km²\n", true_max_area_km2))
+    cat(sprintf("   Cutoff elevation: %.2f m\n", elev_cutoff))
+    cat(sprintf("   Using %d pixels (%.2f km²)\n", idx_cutoff, cumulative_area[idx_cutoff]))
+  } else {
+    elev_cutoff <- elev_max
+    cat("\n2. No truncation (true AE curve not found)\n")
+  }
+  
+  # ---- 3. 定义水位高度序列（到截断点为止）----
+  elevation_levels <- seq(from = elev_min, to = elev_cutoff, by = elevation_step)
   n_levels <- length(elevation_levels)
   
-  cat(sprintf("   Number of elevation levels: %d\n", n_levels))
+  cat(sprintf("\n3. Computing AE curve (%d levels)...\n", n_levels))
   
-  # ---- 3. 计算每个水位下的淹没面积 ----
-  cat("\n2. Computing inundated area for each elevation level...\n")
-  cat("   (This may take a moment...)\n")
-  
+  # ---- 4. 计算每个水位下的淹没面积 ----
   areas <- numeric(n_levels)
   
-  # 对每个水位高度 h，计算 Z <= h 的像元数量
   for (i in 1:n_levels) {
     h <- elevation_levels[i]
-    
-    # 淹没区域：高程 <= h
     inundated <- elev_values <= h
     n_inundated <- sum(inundated)
-    
-    # 计算面积（像元数 × 像元面积）
     areas[i] <- n_inundated * cell_area
     
-    # 进度提示（每 10% 输出一次）
     if (i %% max(1, floor(n_levels / 10)) == 0) {
       cat(sprintf("   Progress: %d%%\n", round(100 * i / n_levels)))
     }
   }
   
-  # ---- 4. 构建 A-E 曲线数据框 ----
+  # ---- 5. 构建 A-E 曲线数据框 ----
   ae_df <- data.frame(
     elevation = elevation_levels,
     area = areas,
-    area_km2 = areas / 1e6  # 转换为平方公里
+    area_km2 = areas / 1e6
   )
   
-  cat("\n3. Area-Elevation curve summary:\n")
-  cat(sprintf("   Minimum area (at lowest elevation): %.2f m² (%.4f km²)\n", 
-              min(ae_df$area), min(ae_df$area_km2)))
-  cat(sprintf("   Maximum area (at highest elevation): %.2f m² (%.4f km²)\n", 
-              max(ae_df$area), max(ae_df$area_km2)))
+  # ===== 修复：移除强制端点注入 =====
+  # 理论依据：强制添加真实端点不是模型预测，会掩盖真实误差
+  # AE 曲线应该完全来自模型预测，端点对齐应在校准阶段完成
+  # 
+  # 以下代码已移除：
+  # if (!is.null(true_max_area_km2) && !is.null(true_max_elev)) {
+  #   ae_df <- rbind(ae_df, data.frame(
+  #     elevation = true_max_elev,
+  #     area = true_max_area_km2 * 1e6,
+  #     area_km2 = true_max_area_km2
+  #   ))
+  # }
+  
+  cat("\n4. Area-Elevation curve summary:\n")
+  cat(sprintf("   Start: (%.4f km², %.2f m)\n", 
+              min(ae_df$area_km2), min(ae_df$elevation)))
+  cat(sprintf("   End:   (%.2f km², %.2f m)\n", 
+              max(ae_df$area_km2), max(ae_df$elevation)))
   
   cat("\n✓ Area-Elevation curve computed!\n\n")
   
@@ -108,12 +156,12 @@ plot_ae_curve <- function(ae_df, data_list, save_path = NULL, true_ae_path = NUL
     tryCatch({
       # 读取CSV文件（跳过第2行单位说明）
       ae_true_raw <- read.csv(true_ae_path, skip = 1)
+      n_cols <- ncol(ae_true_raw)
       
-      # 提取Elevation (m)和Area (km2)列
-      # 根据观察，第4列是Elevation (m)，第6列是Area (km2)
+      # 第4列是Elevation (m)，最后一列是Area (km²)
       ae_true <- data.frame(
         elevation = ae_true_raw[, 4],
-        area_km2 = ae_true_raw[, 6],
+        area_km2 = ae_true_raw[, n_cols],
         type = "True (from validation data)"
       )
       

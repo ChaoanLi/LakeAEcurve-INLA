@@ -1,6 +1,6 @@
 ################################################################################
-# SPDE 模型定义与先验设置
 # SPDE Model Definition and Prior Specification
+# Authors: Chaoan Li, Yinuo Zhu | STAT 647, Texas A&M University
 ################################################################################
 
 #' 定义 SPDE 模型（使用 PC priors）
