@@ -9,15 +9,15 @@
 
 ## Overview
 
-This project implements a Bayesian spatial model for reconstructing lake bathymetry and area-elevation (A-E) curves from multi-source remote sensing data. The methodology leverages the INLA-SPDE framework to efficiently estimate continuous depth fields from discrete water occurrence observations.
+This project implements a Bayesian spatial model for reconstructing lake bathymetry and estimating area-elevation (A-E) curves from multi-source remote sensing data. The methodology uses the INLA-SPDE framework to efficiently estimate continuous depth fields from discrete water occurrence observations.
 
 ### Key Results (Belton Lake)
 
 | Metric | Value |
 |--------|-------|
 | MAE | 1.45 km² |
-| R² | 0.998 |
-| Calibration Method | Piecewise (4 segments) |
+| R² | 0.98 |
+| Calibration Method | DEM+4pt (piecewise) |
 
 ## Repository Structure
 
@@ -34,7 +34,7 @@ LakeAEcurve-INLA/
 │   ├── reconstruct_map.R       # Bathymetry reconstruction
 │   ├── ae_curve_ppd.R          # A-E curve computation
 │   └── calibration_module.R    # Calibration framework (4 methods)
-├── 04_Validation/              # Ground truth A-E curve
+├── 04_Validation/              # Ground truth A-E curves
 ├── outputs/                    # Generated outputs
 ├── cache/                      # Cached intermediate results
 ├── main_runner.R               # Main execution script
@@ -46,7 +46,7 @@ LakeAEcurve-INLA/
 ### Requirements
 
 ```r
-install.packages(c("terra", "sf", "ggplot2", "viridis", "MASS"))
+install.packages(c("terra", "sf", "ggplot2", "viridis", "patchwork"))
 
 # INLA (from special repository)
 install.packages("INLA", 
@@ -85,19 +85,22 @@ where $f(s)$ is a Gaussian random field with Matérn covariance, approximated vi
 
 ### Calibration
 
-Four methods are implemented; piecewise affine calibration achieves lowest MAE:
+Four DEM-based calibration methods are implemented:
 
-| Method | MAE (km²) |
-|--------|-----------|
-| Regression | 23.40 |
-| Endpoint-Constrained | 4.23 |
-| Hybrid | 4.23 |
-| **Piecewise (4 segments)** | **1.45** |
+| Method | Val. Points | Description |
+|--------|-------------|-------------|
+| DEM-only | 0 | Extrapolate using DEM slope |
+| DEM+1pt | 1 | DEM + dam point anchor |
+| DEM+2pt | 2 | DEM + 2-segment interpolation |
+| DEM+4pt | 4 | DEM + 4-segment interpolation (best) |
+
+All methods share the same DEM-based calibration above the waterline; differences occur only in underwater extrapolation.
 
 ## References
 
 - Rue, H., Martino, S., & Chopin, N. (2009). Approximate Bayesian inference for latent Gaussian models. *JRSSB*.
 - Lindgren, F., Rue, H., & Lindström, J. (2011). An explicit link between Gaussian fields and Gaussian Markov random fields. *JRSSB*.
+- Simpson, D., et al. (2017). Penalising model component complexity. *Statistical Science*.
 
 ## License
 

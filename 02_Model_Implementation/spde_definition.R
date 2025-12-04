@@ -3,16 +3,14 @@
 # Authors: Chaoan Li, Yinuo Zhu | STAT 647, Texas A&M University
 ################################################################################
 
-#' 定义 SPDE 模型（使用 PC priors）
 #' Define SPDE model with PC priors
-#' 
-#' @param mesh INLA mesh 对象
-#' @param prior_range 先验 range 参数：c(range0, P(range < range0))
-#' @param prior_sigma 先验 sigma 参数：c(sigma0, P(sigma > sigma0))
-#' @return SPDE 对象
+#' @param mesh INLA mesh object
+#' @param prior_range Prior range parameters: c(range0, P(range < range0))
+#' @param prior_sigma Prior sigma parameters: c(sigma0, P(sigma > sigma0))
+#' @return SPDE object
 define_spde <- function(mesh,
-                         prior_range = c(500, 0.5),
-                         prior_sigma = c(1, 0.01)) {
+                        prior_range = c(500, 0.5),
+                        prior_sigma = c(1, 0.01)) {
   
   library(INLA)
   
@@ -25,25 +23,22 @@ define_spde <- function(mesh,
   cat(sprintf("   Prior for sigma: P(sigma > %.2f) = %.2f\n", 
               prior_sigma[1], prior_sigma[2]))
   
-  # 使用 PC priors 构建 SPDE
   spde <- inla.spde2.pcmatern(
     mesh = mesh,
     prior.range = prior_range,
     prior.sigma = prior_sigma
   )
   
-  cat("\n✓ SPDE model defined!\n\n")
+  cat("\nSPDE model defined.\n\n")
   
   return(spde)
 }
 
 
-#' 构建投影矩阵（A 矩阵）
 #' Build projection matrices from mesh to observation locations
-#' 
-#' @param mesh INLA mesh 对象
-#' @param obs_data build_observation_data() 返回的列表
-#' @return 包含 A_elev 和 A_water 的列表
+#' @param mesh INLA mesh object
+#' @param obs_data List from build_observation_data()
+#' @return List with A_elev and A_water matrices
 build_projection_matrices <- function(mesh, obs_data) {
   
   library(INLA)
@@ -55,7 +50,7 @@ build_projection_matrices <- function(mesh, obs_data) {
   elev_df <- obs_data$elev_df
   water_df <- obs_data$water_df
   
-  # ---- 1. 高程观测的投影矩阵 ----
+  # 1. Projection matrix for elevation observations
   if (nrow(elev_df) > 0) {
     cat(sprintf("\n1. Building A matrix for elevation observations (%d points)...\n", 
                 nrow(elev_df)))
@@ -71,7 +66,7 @@ build_projection_matrices <- function(mesh, obs_data) {
     A_elev <- NULL
   }
   
-  # ---- 2. 水频率观测的投影矩阵 ----
+  # 2. Projection matrix for water frequency observations
   cat(sprintf("\n2. Building A matrix for water observations (%d points)...\n", 
               nrow(water_df)))
   
@@ -82,11 +77,10 @@ build_projection_matrices <- function(mesh, obs_data) {
   
   cat(sprintf("   A_water dimensions: %d x %d\n", nrow(A_water), ncol(A_water)))
   
-  cat("\n✓ Projection matrices built!\n\n")
+  cat("\nProjection matrices built.\n\n")
   
   return(list(
     A_elev = A_elev,
     A_water = A_water
   ))
 }
-

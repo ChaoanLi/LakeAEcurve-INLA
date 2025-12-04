@@ -2,14 +2,14 @@
 # Calibration Framework for Bathymetry Reconstruction
 #
 # Core idea:
-#   - DEM region (above water surface): ALL methods use same DEM calibration
+#   - DEM region (above water): ALL methods use same DEM-based calibration
 #   - Underwater region: Different extrapolation based on validation points
 #
 # Methods:
-#   1. DEM-only: Use DEM's (a,b) to extrapolate down to lake bottom
-#   2. DEM+1pt: DEM above + new (a',b') from DEM-bottom to dam point
+#   1. DEM-only (0 val pts): Extrapolate using DEM's (a,b)
+#   2. DEM+1pt: DEM above + interpolate to dam point (min elev)
 #   3. DEM+2pt: DEM above + 2-segment below (0% + 50%)
-#   4. DEM+4pt: DEM above + 3-segment below (0% + 25% + 50% + 75%)
+#   4. DEM+4pt: DEM above + 4-segment below (0%/25%/50%/75%)
 #
 # Authors: Chaoan Li, Yinuo Zhu
 # Course: STAT 647, Texas A&M University
@@ -17,7 +17,12 @@
 
 library(INLA)
 
-#' 计算 AE 曲线的拟合指标
+#' Compute A-E curve fitting metrics
+#' @param Z_calibrated Calibrated elevation values
+#' @param cell_area_km2 Cell area in km^2
+#' @param true_elev True elevation values
+#' @param true_area True area values
+#' @return List of metrics (MAE, RMSE, R-squared, MAPE, NSE)
 compute_ae_metrics <- function(Z_calibrated, cell_area_km2, true_elev, true_area) {
   
   Z_valid <- Z_calibrated[!is.na(Z_calibrated)]
@@ -50,9 +55,9 @@ compute_ae_metrics <- function(Z_calibrated, cell_area_km2, true_elev, true_area
   common_elevations <- seq(elev_min_common, elev_max_common, length.out = 200)
   
   pred_interp <- approx(pred_elev, pred_area, xout = common_elevations, 
-                         rule = 2, ties = "ordered")$y
+                        rule = 2, ties = "ordered")$y
   true_interp <- approx(true_elev_clean, true_area_clean, xout = common_elevations, 
-                         rule = 2, ties = "ordered")$y
+                        rule = 2, ties = "ordered")$y
   
   residuals <- pred_interp - true_interp
   
@@ -76,11 +81,14 @@ compute_ae_metrics <- function(Z_calibrated, cell_area_km2, true_elev, true_area
 }
 
 
-#' 基础 DEM 校准：用岸边 DEM 得到 (a, b)
-#' 这是所有方法共用的基础
+#' Compute base DEM calibration parameters via quantile matching
+#' This is shared by all methods
+#' @param f_shore Field values at shore locations
+#' @param shore_elev DEM elevation at shore locations
+#' @return List with a, b, r_squared, and range information
 get_dem_calibration <- function(f_shore, shore_elev) {
   
-  # 3σ 异常值过滤
+  # 3-sigma outlier removal
   z_score_elev <- abs(scale(shore_elev))
   z_score_field <- abs(scale(f_shore))
   valid_idx <- (z_score_elev < 3) & (z_score_field < 3) & 
@@ -94,7 +102,7 @@ get_dem_calibration <- function(f_shore, shore_elev) {
     return(NULL)
   }
   
-  # Field 和高程是逆向关系，取负
+  # Field has inverse relationship with elevation, use negative
   probs <- seq(0.05, 0.95, by = 0.05)
   neg_field_quantiles <- quantile(-f_shore_clean, probs = probs)
   dem_quantiles <- quantile(shore_elev_clean, probs = probs)
@@ -107,9 +115,9 @@ get_dem_calibration <- function(f_shore, shore_elev) {
   ss_tot <- sum((dem_quantiles - mean(dem_quantiles))^2)
   r_squared <- max(0, 1 - ss_res / ss_tot)
   
-  # DEM 覆盖的 field 范围（岸边）
-  dem_field_min <- min(-f_shore_clean)  # -field 最小 = 最深处（DEM能看到的最深）
-  dem_field_max <- max(-f_shore_clean)  # -field 最大 = 最浅处
+  # DEM-covered field range (shoreline)
+  dem_field_min <- min(-f_shore_clean)
+  dem_field_max <- max(-f_shore_clean)
   dem_elev_min <- min(shore_elev_clean)
   dem_elev_max <- max(shore_elev_clean)
   
@@ -123,15 +131,14 @@ get_dem_calibration <- function(f_shore, shore_elev) {
 }
 
 
-#' 方法 1：DEM-only（0 验证点）
-#' 用 DEM 的 (a,b) 直接外推到湖底
+#' Method 1: DEM-only calibration (0 validation points)
+#' Extrapolate using DEM's (a,b) to lake bottom
 calibration_dem_only <- function(Z_pred_raw, dem_calib) {
   
   if (is.null(dem_calib)) {
     return(list(a = NA, b = NA, Z_calibrated = Z_pred_raw))
   }
   
-  # 对所有像素应用 DEM 的 (a, b)
   neg_field <- -Z_pred_raw
   Z_calibrated <- dem_calib$a + dem_calib$b * neg_field
   
@@ -147,8 +154,8 @@ calibration_dem_only <- function(Z_pred_raw, dem_calib) {
 }
 
 
-#' 方法 2：DEM + 1个验证点（最低点/坝点）
-#' DEM 区域不变，水下区域用 DEM 底部到坝点的线性插值
+#' Method 2: DEM + 1 validation point (dam/minimum elevation)
+#' DEM region unchanged, underwater region interpolated from DEM boundary to dam
 calibration_dem_plus_1pt <- function(Z_pred_raw, dem_calib, true_min_elev) {
   
   if (is.null(dem_calib)) {
@@ -158,20 +165,19 @@ calibration_dem_plus_1pt <- function(Z_pred_raw, dem_calib, true_min_elev) {
   neg_field <- -Z_pred_raw
   Z_calibrated <- rep(NA, length(neg_field))
   
-  # DEM 区域边界（-field 值）
-  dem_field_min <- dem_calib$dem_field_range[1]  # DEM 能看到的最深处的 -field
-  dem_elev_at_boundary <- dem_calib$a + dem_calib$b * dem_field_min  # 对应的高程
+  # DEM region boundary
+  dem_field_min <- dem_calib$dem_field_range[1]
+  dem_elev_at_boundary <- dem_calib$a + dem_calib$b * dem_field_min
   
-  # 找到场值比 DEM 边界更深的像素（这些是水下区域）
+  # Identify underwater pixels (field values beyond DEM boundary)
   is_underwater <- neg_field < dem_field_min
   is_dem_region <- neg_field >= dem_field_min
   
-  # DEM 区域：用 DEM 的 (a, b)
+  # DEM region: apply DEM's (a, b)
   Z_calibrated[is_dem_region] <- dem_calib$a + dem_calib$b * neg_field[is_dem_region]
   
-  # 水下区域：用 DEM 边界点和坝点（最低点）来计算新的 (a', b')
-  # 两点：(dem_field_min, dem_elev_at_boundary) 和 (min(-field), true_min_elev)
-  underwater_field_min <- min(neg_field)  # 湖底的 -field 值
+  # Underwater region: interpolate from DEM boundary to dam point
+  underwater_field_min <- min(neg_field)
   
   if (abs(underwater_field_min - dem_field_min) > 1e-6) {
     b_underwater <- (true_min_elev - dem_elev_at_boundary) / (underwater_field_min - dem_field_min)
@@ -179,7 +185,6 @@ calibration_dem_plus_1pt <- function(Z_pred_raw, dem_calib, true_min_elev) {
     
     Z_calibrated[is_underwater] <- a_underwater + b_underwater * neg_field[is_underwater]
   } else {
-    # 如果范围太小，直接用 DEM 参数
     Z_calibrated[is_underwater] <- dem_calib$a + dem_calib$b * neg_field[is_underwater]
   }
   
@@ -198,10 +203,10 @@ calibration_dem_plus_1pt <- function(Z_pred_raw, dem_calib, true_min_elev) {
 }
 
 
-#' 方法 3：DEM + 2个验证点（0% + 50%）
-#' DEM 区域不变，水下区域分2段
+#' Method 3: DEM + 2 validation points (0% + 50%)
+#' DEM region unchanged, underwater region split into 2 segments
 calibration_dem_plus_2pt <- function(Z_pred_raw, dem_calib, cell_area_km2, 
-                                       true_elev, true_area) {
+                                     true_elev, true_area) {
   
   if (is.null(dem_calib)) {
     return(list(a = NA, b = NA, Z_calibrated = Z_pred_raw))
@@ -210,33 +215,33 @@ calibration_dem_plus_2pt <- function(Z_pred_raw, dem_calib, cell_area_km2,
   neg_field <- -Z_pred_raw
   Z_calibrated <- rep(NA, length(neg_field))
   
-  # DEM 边界
+  # DEM boundary
   dem_field_min <- dem_calib$dem_field_range[1]
   dem_elev_at_boundary <- dem_calib$a + dem_calib$b * dem_field_min
   
   is_underwater <- neg_field < dem_field_min
   is_dem_region <- neg_field >= dem_field_min
   
-  # DEM 区域
+  # DEM region
   Z_calibrated[is_dem_region] <- dem_calib$a + dem_calib$b * neg_field[is_dem_region]
   
-  # 水下区域分2段：0%-50% 和 50%-DEM边界
+  # Underwater region: 2 segments (0%-50% and 50%-DEM boundary)
   true_max_area <- max(true_area)
   true_min_elev <- min(true_elev)
   
-  # 50% 分位点
+  # 50% quantile
   area_50 <- 0.50 * true_max_area
   true_elev_50 <- approx(true_area, true_elev, xout = area_50, rule = 2, ties = "ordered")$y
   
-  # 找到对应 50% 面积的 -field 值
+  # Find corresponding -field value at 50% area
   neg_field_sorted <- sort(neg_field)
   cumulative_area <- (1:length(neg_field_sorted)) * cell_area_km2
   idx_50 <- which.min(abs(cumulative_area - area_50))
   neg_field_50 <- neg_field_sorted[idx_50]
   
-  underwater_field_min <- min(neg_field)  # 最深处
+  underwater_field_min <- min(neg_field)
   
-  # 段 1: 最深处 (0%) 到 50%
+  # Segment 1: deepest (0%) to 50%
   if (abs(neg_field_50 - underwater_field_min) > 1e-6) {
     b1 <- (true_elev_50 - true_min_elev) / (neg_field_50 - underwater_field_min)
     a1 <- true_min_elev - b1 * underwater_field_min
@@ -245,7 +250,7 @@ calibration_dem_plus_2pt <- function(Z_pred_raw, dem_calib, cell_area_km2,
     a1 <- true_min_elev - b1 * underwater_field_min
   }
   
-  # 段 2: 50% 到 DEM 边界
+  # Segment 2: 50% to DEM boundary
   if (abs(dem_field_min - neg_field_50) > 1e-6) {
     b2 <- (dem_elev_at_boundary - true_elev_50) / (dem_field_min - neg_field_50)
     a2 <- true_elev_50 - b2 * neg_field_50
@@ -254,7 +259,7 @@ calibration_dem_plus_2pt <- function(Z_pred_raw, dem_calib, cell_area_km2,
     a2 <- dem_elev_at_boundary - b2 * dem_field_min
   }
   
-  # 应用分段校准
+  # Apply piecewise calibration
   is_seg1 <- is_underwater & (neg_field < neg_field_50)
   is_seg2 <- is_underwater & (neg_field >= neg_field_50)
   
@@ -277,10 +282,10 @@ calibration_dem_plus_2pt <- function(Z_pred_raw, dem_calib, cell_area_km2,
 }
 
 
-#' 方法 4：DEM + 4个验证点（0% + 25% + 50% + 75%）
-#' DEM 区域不变，水下区域分4段
+#' Method 4: DEM + 4 validation points (0%/25%/50%/75%)
+#' DEM region unchanged, underwater region split into 4 segments
 calibration_dem_plus_4pt <- function(Z_pred_raw, dem_calib, cell_area_km2,
-                                       true_elev, true_area) {
+                                     true_elev, true_area) {
   
   if (is.null(dem_calib)) {
     return(list(a = NA, b = NA, Z_calibrated = Z_pred_raw))
@@ -289,31 +294,31 @@ calibration_dem_plus_4pt <- function(Z_pred_raw, dem_calib, cell_area_km2,
   neg_field <- -Z_pred_raw
   Z_calibrated <- rep(NA, length(neg_field))
   
-  # DEM 边界
+  # DEM boundary
   dem_field_min <- dem_calib$dem_field_range[1]
   dem_elev_at_boundary <- dem_calib$a + dem_calib$b * dem_field_min
   
   is_underwater <- neg_field < dem_field_min
   is_dem_region <- neg_field >= dem_field_min
   
-  # DEM 区域
+  # DEM region
   Z_calibrated[is_dem_region] <- dem_calib$a + dem_calib$b * neg_field[is_dem_region]
   
-  # 水下区域分4段
+  # Underwater region: 4 segments
   true_max_area <- max(true_area)
   true_min_elev <- min(true_elev)
   
-  # 分位点
+  # Quantile breakpoints
   probs <- c(0, 0.25, 0.50, 0.75)
   target_areas <- probs * true_max_area
-  target_areas[1] <- 0.001 * true_max_area  # 避免 0
+  target_areas[1] <- 0.001 * true_max_area  # Avoid zero
   
   true_elevs <- sapply(target_areas, function(a) {
     approx(true_area, true_elev, xout = a, rule = 2, ties = "ordered")$y
   })
   true_elevs[1] <- true_min_elev
   
-  # 找到对应的 -field 值
+  # Find corresponding -field values
   neg_field_sorted <- sort(neg_field)
   cumulative_area <- (1:length(neg_field_sorted)) * cell_area_km2
   
@@ -325,7 +330,7 @@ calibration_dem_plus_4pt <- function(Z_pred_raw, dem_calib, cell_area_km2,
   underwater_field_min <- min(neg_field)
   target_neg_fields[1] <- underwater_field_min
   
-  # 添加 DEM 边界作为最后一个点
+  # Add DEM boundary as final point
   all_neg_fields <- c(target_neg_fields, dem_field_min)
   all_elevs <- c(true_elevs, dem_elev_at_boundary)
   
@@ -347,12 +352,12 @@ calibration_dem_plus_4pt <- function(Z_pred_raw, dem_calib, cell_area_km2,
     
     segments[[i]] <- list(
       range = sprintf("%.0f%%-%.0f%%", probs[i]*100, 
-                       ifelse(i < 4, probs[i+1]*100, 100)),
+                      ifelse(i < 4, probs[i+1]*100, 100)),
       a = a_i,
       b = b_i
     )
     
-    # 应用
+    # Apply segment calibration
     if (i == 1) {
       seg_idx <- is_underwater & (neg_field < nf_hi)
     } else if (i == 4) {
@@ -377,7 +382,13 @@ calibration_dem_plus_4pt <- function(Z_pred_raw, dem_calib, cell_area_km2,
 }
 
 
-#' 完整校准框架
+#' Run complete calibration framework
+#' Compares all 4 methods and selects best by MAE
+#' @param result INLA fit result
+#' @param mesh INLA mesh object
+#' @param data_list Preprocessed data list
+#' @param Z_pred_raw Raw predicted field values
+#' @return List with all calibration results and best method
 run_calibration_framework <- function(result, mesh, data_list, Z_pred_raw) {
   
   cat("\n")
@@ -389,9 +400,9 @@ run_calibration_framework <- function(result, mesh, data_list, Z_pred_raw) {
   
   cell_area_km2 <- data_list$cell_area / 1e6
   
-  # 读取真实 AE 曲线
+  # Load true A-E curve
   true_ae_path <- file.path("04_Validation", 
-                             sprintf("%s_AVE.csv", data_list$lake_name))
+                            sprintf("%s_AVE.csv", data_list$lake_name))
   ae_true_raw <- read.csv(true_ae_path, skip = 1)
   n_cols <- ncol(ae_true_raw)
   true_elev <- ae_true_raw[, 4]
@@ -404,10 +415,10 @@ run_calibration_framework <- function(result, mesh, data_list, Z_pred_raw) {
   true_min_elev <- min(true_elev)
   true_max_area <- max(true_area)
   
-  cat(sprintf("True A-E: elev %.2f-%.2f m, area 0-%.2f km²\n\n", 
+  cat(sprintf("True A-E: elev %.2f-%.2f m, area 0-%.2f km2\n\n", 
               true_min_elev, max(true_elev), true_max_area))
   
-  # 获取岸边观测
+  # Get shore observations
   elev_df <- data_list$obs_data$elev_df
   shore_coords <- as.matrix(elev_df[, c("x", "y")])
   shore_elev <- elev_df$elev
@@ -419,10 +430,10 @@ run_calibration_framework <- function(result, mesh, data_list, Z_pred_raw) {
   cat(sprintf("Shore DEM: %d points, elev %.1f-%.1f m\n\n", 
               length(shore_elev), min(shore_elev), max(shore_elev)))
   
-  # 基础 DEM 校准（所有方法共用）
+  # Base DEM calibration (shared by all methods)
   cat("Computing base DEM calibration (shared by all methods)...\n")
   dem_calib <- get_dem_calibration(f_shore, shore_elev)
-  cat(sprintf("  DEM: a=%.4f, b=%.4f, R²=%.4f\n", 
+  cat(sprintf("  DEM: a=%.4f, b=%.4f, R2=%.4f\n", 
               dem_calib$a, dem_calib$b, dem_calib$r_squared))
   cat(sprintf("  DEM elev range: %.2f - %.2f m\n\n", 
               dem_calib$dem_elev_range[1], dem_calib$dem_elev_range[2]))
@@ -430,59 +441,59 @@ run_calibration_framework <- function(result, mesh, data_list, Z_pred_raw) {
   results <- list()
   all_metrics <- list()
   
-  # ---- 方法 1 ----
+  # Method 1
   cat(strrep("-", 50), "\n")
-  cat("Method 1: DEM-only (0 val pts) - Extrapolate with DEM's slope\n")
+  cat("Method 1: DEM-only (0 val pts) - Extrapolate with DEM slope\n")
   cat(strrep("-", 50), "\n")
   
   r1 <- calibration_dem_only(Z_pred_raw, dem_calib)
   m1 <- compute_ae_metrics(r1$Z_calibrated, cell_area_km2, true_elev, true_area)
-  cat(sprintf("  MAE=%.2f km², R²=%.4f\n\n", m1$mae, m1$r_squared))
+  cat(sprintf("  MAE=%.2f km2, R2=%.4f\n\n", m1$mae, m1$r_squared))
   
   results$dem_only <- r1
   results$dem_only$metrics <- m1
   all_metrics$dem_only <- m1
   
-  # ---- 方法 2 ----
+  # Method 2
   cat(strrep("-", 50), "\n")
   cat("Method 2: DEM+1pt (dam point) - DEM above, new slope below\n")
   cat(strrep("-", 50), "\n")
   
   r2 <- calibration_dem_plus_1pt(Z_pred_raw, dem_calib, true_min_elev)
   m2 <- compute_ae_metrics(r2$Z_calibrated, cell_area_km2, true_elev, true_area)
-  cat(sprintf("  MAE=%.2f km², R²=%.4f\n\n", m2$mae, m2$r_squared))
+  cat(sprintf("  MAE=%.2f km2, R2=%.4f\n\n", m2$mae, m2$r_squared))
   
   results$dem_plus_1pt <- r2
   results$dem_plus_1pt$metrics <- m2
   all_metrics$dem_plus_1pt <- m2
   
-  # ---- 方法 3 ----
+  # Method 3
   cat(strrep("-", 50), "\n")
   cat("Method 3: DEM+2pt (0%%+50%%) - DEM above, 2 segments below\n")
   cat(strrep("-", 50), "\n")
   
   r3 <- calibration_dem_plus_2pt(Z_pred_raw, dem_calib, cell_area_km2, true_elev, true_area)
   m3 <- compute_ae_metrics(r3$Z_calibrated, cell_area_km2, true_elev, true_area)
-  cat(sprintf("  MAE=%.2f km², R²=%.4f\n\n", m3$mae, m3$r_squared))
+  cat(sprintf("  MAE=%.2f km2, R2=%.4f\n\n", m3$mae, m3$r_squared))
   
   results$dem_plus_2pt <- r3
   results$dem_plus_2pt$metrics <- m3
   all_metrics$dem_plus_2pt <- m3
   
-  # ---- 方法 4 ----
+  # Method 4
   cat(strrep("-", 50), "\n")
   cat("Method 4: DEM+4pt (0%%/25%%/50%%/75%%) - DEM above, 4 segments below\n")
   cat(strrep("-", 50), "\n")
   
   r4 <- calibration_dem_plus_4pt(Z_pred_raw, dem_calib, cell_area_km2, true_elev, true_area)
   m4 <- compute_ae_metrics(r4$Z_calibrated, cell_area_km2, true_elev, true_area)
-  cat(sprintf("  MAE=%.2f km², R²=%.4f\n\n", m4$mae, m4$r_squared))
+  cat(sprintf("  MAE=%.2f km2, R2=%.4f\n\n", m4$mae, m4$r_squared))
   
   results$dem_plus_4pt <- r4
   results$dem_plus_4pt$metrics <- m4
   all_metrics$dem_plus_4pt <- m4
   
-  # ---- 比较 ----
+  # Comparison
   cat(strrep("=", 70), "\n")
   cat("  COMPARISON\n")
   cat(strrep("=", 70), "\n\n")
@@ -492,7 +503,7 @@ run_calibration_framework <- function(result, mesh, data_list, Z_pred_raw) {
   mae_values <- c(m1$mae, m2$mae, m3$mae, m4$mae)
   r2_values <- c(m1$r_squared, m2$r_squared, m3$r_squared, m4$r_squared)
   
-  cat(sprintf("  %-12s  %8s  %10s  %10s\n", "Method", "Val.Pts", "MAE(km²)", "R²"))
+  cat(sprintf("  %-12s  %8s  %10s  %10s\n", "Method", "Val.Pts", "MAE(km2)", "R2"))
   cat(sprintf("  %s\n", strrep("-", 46)))
   for (i in 1:4) {
     cat(sprintf("  %-12s  %8d  %10.2f  %10.4f\n", 
@@ -504,7 +515,7 @@ run_calibration_framework <- function(result, mesh, data_list, Z_pred_raw) {
   best_metrics <- list(m1, m2, m3, m4)[[best_idx]]
   best_result <- list(r1, r2, r3, r4)[[best_idx]]
   
-  cat(sprintf("\n*** BEST: %s (MAE=%.2f, R²=%.4f) ***\n\n", 
+  cat(sprintf("\n*** BEST: %s (MAE=%.2f, R2=%.4f) ***\n\n", 
               best_method, best_metrics$mae, best_metrics$r_squared))
   
   results$dem_calib <- dem_calib
@@ -530,7 +541,11 @@ run_calibration_framework <- function(result, mesh, data_list, Z_pred_raw) {
 }
 
 
-#' 生成校准比较图
+#' Generate calibration comparison plot
+#' @param calib_results Results from run_calibration_framework()
+#' @param data_list Preprocessed data list
+#' @param save_path Path to save plot (optional)
+#' @return ggplot object
 plot_calibration_comparison <- function(calib_results, data_list, save_path = NULL) {
   
   library(ggplot2)
@@ -557,10 +572,10 @@ plot_calibration_comparison <- function(calib_results, data_list, save_path = NU
   m4 <- calib_results$dem_plus_4pt$metrics
   
   label_true <- "True (Survey)"
-  label_1 <- sprintf("DEM-only: 0pt (MAE=%.1f, R²=%.2f)", m1$mae, m1$r_squared)
-  label_2 <- sprintf("DEM+1pt: 0%% (MAE=%.1f, R²=%.2f)", m2$mae, m2$r_squared)
-  label_3 <- sprintf("DEM+2pt: 0%%+50%% (MAE=%.1f, R²=%.2f)", m3$mae, m3$r_squared)
-  label_4 <- sprintf("DEM+4pt: 0%%/25%%/50%%/75%% (MAE=%.1f, R²=%.2f)", m4$mae, m4$r_squared)
+  label_1 <- sprintf("DEM-only: 0pt (MAE=%.1f, R2=%.2f)", m1$mae, m1$r_squared)
+  label_2 <- sprintf("DEM+1pt: 0%% (MAE=%.1f, R2=%.2f)", m2$mae, m2$r_squared)
+  label_3 <- sprintf("DEM+2pt: 0%%+50%% (MAE=%.1f, R2=%.2f)", m3$mae, m3$r_squared)
+  label_4 <- sprintf("DEM+4pt: 0%%/25%%/50%%/75%% (MAE=%.1f, R2=%.2f)", m4$mae, m4$r_squared)
   
   plot_data <- rbind(
     data.frame(true_ae, method = label_true),
@@ -571,7 +586,7 @@ plot_calibration_comparison <- function(calib_results, data_list, save_path = NU
   )
   
   plot_data$method <- factor(plot_data$method, 
-                              levels = c(label_true, label_1, label_2, label_3, label_4))
+                             levels = c(label_true, label_1, label_2, label_3, label_4))
   
   colors <- c("black", "#E41A1C", "#FF7F00", "#377EB8", "#4DAF4A")
   names(colors) <- c(label_true, label_1, label_2, label_3, label_4)
@@ -582,18 +597,18 @@ plot_calibration_comparison <- function(calib_results, data_list, save_path = NU
   sizes <- c(1.8, 1.0, 1.0, 1.2, 1.5)
   names(sizes) <- c(label_true, label_1, label_2, label_3, label_4)
   
-  # 找到 DEM 区域的边界（所有方法应该在这里重合）
+  # DEM region boundary
   dem_elev_min <- calib_results$dem_calib$dem_elev_range[1]
   
   p <- ggplot(plot_data, aes(x = elevation, y = area_km2, 
-                              color = method, linetype = method, linewidth = method)) +
+                             color = method, linetype = method, linewidth = method)) +
     geom_line() +
     geom_hline(yintercept = true_max_area, linetype = "dotted", color = "gray50", linewidth = 0.8) +
     geom_vline(xintercept = dem_elev_min, linetype = "dashed", color = "gray60", linewidth = 0.6) +
     annotate("text", x = dem_elev_min + 1, y = max(plot_data$area_km2) * 0.9, 
              label = "DEM boundary", angle = 90, hjust = 1, size = 3.5, color = "gray40") +
     annotate("text", x = max(plot_data$elevation) - 2, y = true_max_area + 2, 
-             label = sprintf("True max = %.1f km²", true_max_area), 
+             label = sprintf("True max = %.1f km2", true_max_area), 
              hjust = 1, size = 4, color = "gray40") +
     scale_color_manual(values = colors) +
     scale_linetype_manual(values = linetypes) +
@@ -632,7 +647,9 @@ plot_calibration_comparison <- function(calib_results, data_list, save_path = NU
 }
 
 
-#' 生成校准报告
+#' Generate calibration report in markdown format
+#' @param calib_results Results from run_calibration_framework()
+#' @return Character string with markdown report
 generate_calibration_report <- function(calib_results) {
   
   report <- paste0(
@@ -640,7 +657,7 @@ generate_calibration_report <- function(calib_results) {
     "**Key Design**: DEM region is identical for all methods.\n",
     "Differences only in underwater extrapolation.\n\n",
     "### Comparison\n\n",
-    "| Method | Val.Pts | MAE (km²) | R² |\n",
+    "| Method | Val.Pts | MAE (km2) | R2 |\n",
     "|--------|---------|-----------|-----|\n"
   )
   

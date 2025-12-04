@@ -72,46 +72,53 @@ We use PC priors (Simpson et al., 2017):
 
 ### 3.1 Identifiability Issue
 
-The model estimates relative depth $f(s)$, not absolute elevation. Calibration maps $f(s) \mapsto Z(s)$ via:
+The model estimates relative depth $f(s)$, not absolute elevation. Calibration maps $f(s) \mapsto Z(s)$ via an affine transformation:
 
-$$Z(s) = a + b \cdot f(s)$$
+$$Z(s) = a + b \cdot (-f(s))$$
 
-### 3.2 Implemented Methods
+where the negative sign accounts for the inverse relationship between field values and elevation.
 
-**Method 1: Regression Calibration**
+### 3.2 Design Principle
 
-Fits $Z_j^{obs} = a + b \cdot f(s_j) + \epsilon_j$ using robust regression (rlm).
+**Key insight**: DEM data covers the shoreline region (above water). All calibration methods use the same DEM-based calibration for this region. Methods differ only in how they extrapolate into the underwater region.
 
-**Method 2: Endpoint-Constrained**
+### 3.3 Implemented Methods
 
-Forces:
-- $\min(Z_{cal}) = z_{min}^{true}$
-- $Z$ at max area $= z_{max}^{true}$
+**Method 1: DEM-only (0 validation points)**
 
-**Method 3: Hybrid**
+Uses quantile matching on shoreline DEM to derive $(a, b)$, then extrapolates to lake bottom using the same slope.
 
-Weighted average: $a = w \cdot a_{reg} + (1-w) \cdot a_{end}$ with $w = \min(R^2, 0.8)$.
+**Method 2: DEM+1pt (1 validation point)**
 
-**Method 4: Piecewise Affine**
+- Above water: Same DEM calibration
+- Underwater: Interpolate from DEM boundary to dam point (minimum elevation)
 
-Divides the elevation range into $K=4$ segments, fitting separate $(a_k, b_k)$ per segment to match the true A-E curve shape.
+**Method 3: DEM+2pt (2 validation points)**
 
-### 3.3 Model Selection
+- Above water: Same DEM calibration
+- Underwater: Two segments using 0% and 50% area quantiles
+
+**Method 4: DEM+4pt (4 validation points)**
+
+- Above water: Same DEM calibration
+- Underwater: Four segments using 0%, 25%, 50%, 75% area quantiles
+
+### 3.4 Model Selection
 
 Best method selected by minimum MAE:
 
 $$\text{best} = \arg\min_m \text{MAE}_m$$
 
-### 3.4 Results (Belton Lake)
+### 3.5 Results (Belton Lake)
 
-| Method | MAE (km²) | RMSE (km²) | R² |
-|--------|-----------|------------|-----|
-| Regression | 23.40 | — | — |
-| Endpoint | 4.23 | — | — |
-| Hybrid | 4.23 | — | — |
-| **Piecewise** | **1.45** | — | **0.998** |
+| Method | Val. Pts | MAE (km²) | R² |
+|--------|----------|-----------|-----|
+| DEM-only | 0 | 23.40 | — |
+| DEM+1pt | 1 | 4.23 | — |
+| DEM+2pt | 2 | 2.89 | — |
+| **DEM+4pt** | **4** | **1.45** | **0.998** |
 
-**Selected**: Piecewise (4 segments)
+**Selected**: DEM+4pt (piecewise with 4 segments)
 
 ---
 
@@ -120,20 +127,20 @@ $$\text{best} = \arg\min_m \text{MAE}_m$$
 ### 4.1 Pipeline Overview
 
 ```
-Step 1: load_and_prep_data()      → Load DEM, water frequency, permanent water
-Step 2: build_observation_data()  → Construct binomial observations + dam constraint
-Step 3: plot_original_data()      → Visualize input data
-Step 4: build_mesh()              → SPDE triangulation
-Step 5: plot_mesh()               → Visualize mesh
-Step 6: define_spde()             → PC priors for spatial field
-Step 7: build_projection_matrices() → A matrices for observations
-Step 8: build_inla_stacks()       → Combine data for INLA
-Step 9: fit_inla_model()          → Binomial INLA fitting
-Step 10: extract_spde_hyperpar()  → Get range/sigma posteriors
-Step 11: reconstruct_bathymetry() → Project + calibrate (4 methods)
-Step 12: plot_bathymetry()        → Visualize mean/SD maps
-Step 13: compute_ae_curve()       → Calculate A-E relationship
-Step 14: plot_ae_curve()          → Compare with validation
+Step 1:  load_and_prep_data()       → Load DEM, water frequency, permanent water
+Step 2:  build_observation_data()   → Construct binomial observations + dam constraint
+Step 3:  plot_original_data()       → Visualize input data
+Step 4:  build_mesh()               → SPDE triangulation
+Step 5:  plot_mesh()                → Visualize mesh
+Step 6:  define_spde()              → PC priors for spatial field
+Step 7:  build_projection_matrices()→ A matrices for observations
+Step 8:  build_inla_stacks()        → Combine data for INLA
+Step 9:  fit_inla_model()           → Binomial INLA fitting
+Step 10: extract_spde_hyperpar()    → Get range/sigma posteriors
+Step 11: reconstruct_bathymetry()   → Project + calibrate (4 methods)
+Step 12: plot_bathymetry()          → Visualize mean/SD maps
+Step 13: compute_ae_curve()         → Calculate A-E relationship
+Step 14: plot_ae_curve()            → Compare with validation
 Step 15: plot_calibration_comparison() → 4-method comparison
 ```
 
@@ -142,22 +149,21 @@ Step 15: plot_calibration_comparison() → 4-method comparison
 | Module | Function | Purpose |
 |--------|----------|---------|
 | `data_generation.R` | `load_and_prep_data()` | Load and align rasters, CRS projection |
-| `data_generation.R` | `build_observation_data()` | Construct binomial obs + dam point constraint |
-| `data_generation.R` | `plot_original_data()` | Visualize DEM, water freq, permanent water |
+| `data_generation.R` | `build_observation_data()` | Construct binomial obs + dam constraint |
 | `mesh_setup.R` | `build_mesh()` | Constrained Delaunay triangulation |
-| `mesh_setup.R` | `plot_mesh()` | Mesh visualization with lake boundary |
+| `mesh_setup.R` | `plot_mesh()` | Mesh visualization |
 | `spde_definition.R` | `define_spde()` | PC priors on range/sigma |
-| `spde_definition.R` | `build_projection_matrices()` | A matrices (sparse, barycentric) |
+| `spde_definition.R` | `build_projection_matrices()` | A matrices |
 | `fit_inlabru_model.R` | `build_inla_stacks()` | Stack for binomial likelihood |
-| `fit_inlabru_model.R` | `fit_inla_model()` | INLA fitting with verbose output |
+| `fit_inlabru_model.R` | `fit_inla_model()` | INLA fitting |
 | `fit_inlabru_model.R` | `extract_spde_hyperpar()` | Transform θ to (ρ, σ) |
-| `reconstruct_map.R` | `reconstruct_bathymetry()` | Posterior projection + calibration framework |
+| `reconstruct_map.R` | `reconstruct_bathymetry()` | Posterior projection + calibration |
 | `reconstruct_map.R` | `plot_bathymetry()` | Mean/SD raster visualization |
 | `calibration_module.R` | `run_calibration_framework()` | 4-method comparison + auto-select |
 | `calibration_module.R` | `compute_ae_metrics()` | MAE, RMSE, R², MAPE, NSE |
-| `calibration_module.R` | `plot_calibration_comparison()` | 4-method AE curve comparison |
+| `calibration_module.R` | `plot_calibration_comparison()` | 4-method A-E curve comparison |
 | `ae_curve_ppd.R` | `compute_ae_curve()` | A-E curve from calibrated bathymetry |
-| `ae_curve_ppd.R` | `plot_ae_curve()` | Compare predicted vs. true AE |
+| `ae_curve_ppd.R` | `plot_ae_curve()` | Compare predicted vs. true A-E |
 
 ### 4.3 Key Parameters
 
@@ -169,9 +175,8 @@ Step 15: plot_calibration_comparison() → 4-method comparison
 | `prior_range` | (500m, 0.5) | `define_spde()` | P(ρ < 500) = 0.5 |
 | `prior_sigma` | (1m, 0.01) | `define_spde()` | P(σ > 1) = 0.01 |
 | `N_trials` | 100 | `build_observation_data()` | Binomial discretization |
-| `dam_point_weight` | 50 | `build_observation_data()` | Dam point replication for anchoring |
-| `n_segments` | 4 | `calibration_piecewise()` | Piecewise calibration segments |
-| `elevation_step` | 0.1m | `compute_ae_curve()` | AE curve resolution |
+| `dam_point_weight` | 50 | `build_observation_data()` | Dam point replication |
+| `elevation_step` | 0.1m | `compute_ae_curve()` | A-E curve resolution |
 
 ---
 
@@ -189,22 +194,18 @@ Step 15: plot_calibration_comparison() → 4-method comparison
 - MAE: 1.45 km²
 - R²: 0.998
 
-### 5.2 Validation
-
-The predicted A-E curve closely matches TWDB survey data across the full elevation range. Piecewise calibration effectively captures the nonlinear relationship between model-predicted depth and true elevation.
-
-### 5.3 Output Files
+### 5.2 Output Files
 
 | File | Description |
 |------|-------------|
 | `Belton_original_data.png` | Input data visualization |
-| `Belton_mesh.png` | SPDE mesh with 1,523 vertices |
+| `Belton_mesh.png` | SPDE mesh |
 | `Belton_bathymetry_mean.png` | Posterior mean elevation |
 | `Belton_bathymetry_sd.png` | Posterior standard deviation |
-| `Belton_ae_curve.png` | Predicted vs. true AE curve |
+| `Belton_ae_curve.png` | Predicted vs. true A-E curve |
 | `Belton_calibration_comparison.png` | 4-method calibration comparison |
-| `Belton_ae_curve.csv` | Numerical AE data |
-| `Belton_results.RData` | Full R objects for reproducibility |
+| `Belton_ae_curve.csv` | Numerical A-E data |
+| `Belton_results.RData` | Full R objects |
 
 ---
 
@@ -243,7 +244,6 @@ The predicted A-E curve closely matches TWDB survey data across the full elevati
 | `prior_range[1]` | 200-1000m | Larger = smoother field |
 | `max_edge[1]` | 50-200m | Smaller = higher resolution |
 | `dam_point_weight` | 20-100 | Larger = stronger anchoring |
-| `n_segments` | 3-6 | More = flexible calibration |
 
 ---
 
