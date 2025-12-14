@@ -15,7 +15,7 @@ This project implements a Bayesian spatial model for reconstructing lake bathyme
 
 | Metric | Value |
 |--------|-------|
-| MAE | 1.45 km² |
+| MAE | 1.1 km² |
 | R² | 0.98 |
 | Calibration Method | DEM+4pt (piecewise) |
 
