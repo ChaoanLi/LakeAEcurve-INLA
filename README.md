@@ -53,6 +53,18 @@ install.packages("INLA",
   repos = c(getOption("repos"), INLA = "https://inla.r-inla-download.org/R/stable"))
 ```
 
+### Data and working directory
+
+Run from the repository root: `main_runner.R` uses `getwd()` to locate the modules and input data. Its default Belton Lake configuration expects:
+
+- `01_Data_Prep/data/DEM/Belton_DEM_100m_Buffer.tif`
+- `01_Data_Prep/data/occurrence/Belton_GSW_Occurrence_Buffer100m.tif`
+- `01_Data_Prep/data/permanent_water/Belton_Min_Permanent_Water.shp`
+- `01_Data_Prep/data/DAM_point/Belton_dam.shp`
+- `04_Validation/Belton_AVE.csv`
+
+Keep the companion files required by each shapefile together. Check these paths before running; update the `lake_info` configuration if your inputs are stored elsewhere.
+
 ### Running the Analysis
 
 ```r
