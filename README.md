@@ -67,6 +67,24 @@ Keep the companion files required by each shapefile together. Check these paths 
 
 ### Running the Analysis
 
+To check the observation-building code without running the full spatial fit:
+
+```sh
+Rscript tests/observation-data.R
+```
+
+These checks cover a dam point supplied in a different coordinate system and
+permanent-water cells both present in and absent from the occurrence data.
+After updating observation-building code, remove the generated
+`cache/Belton_obs_data.RData` before recomputing observations; an existing cache
+bypasses that code.
+
+The full fit also requires a working INLA native executable, not just a successful
+`library(INLA)` call. The validation environment (conda R 4.5.3 on macOS ARM)
+reached native fitting but the official macOS binary expected framework R's
+`libRblas.dylib`. Full-model reproduction was therefore not verified in that
+environment. Use an R/INLA installation with compatible native libraries.
+
 ```r
 source("main_runner.R")
 ```

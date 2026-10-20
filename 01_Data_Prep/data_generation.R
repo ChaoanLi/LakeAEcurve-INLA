@@ -344,7 +344,7 @@ build_observation_data <- function(data_list,
       dam_crs <- st_crs(dam_point)
       dem_crs <- crs(dem)
       
-      if (!st_is_longlat(dam_crs) && st_is_longlat(st_crs(dem_crs))) {
+      if (dam_crs != st_crs(dem_crs)) {
         cat("   Transforming dam point CRS to match DEM...\n")
         dam_point <- st_transform(dam_point, crs = dem_crs)
       }
@@ -418,14 +418,13 @@ build_observation_data <- function(data_list,
       p = 1.0
     )
     
-    for (i in 1:nrow(perm_df)) {
-      match_idx <- which(water_df$x == perm_df$x[i] & water_df$y == perm_df$y[i])
-      if (length(match_idx) > 0) {
-        water_df$p[match_idx] <- 1.0
-      } else {
-        water_df <- rbind(water_df, perm_df[i, ])
-      }
-    }
+    # Round-trip precision keeps distinct raster coordinates distinct. Match
+    # all permanent-water cells together instead of scanning water_df per cell.
+    water_keys <- sprintf("%.17g,%.17g", water_df$x, water_df$y)
+    perm_keys <- sprintf("%.17g,%.17g", perm_df$x, perm_df$y)
+    water_df$p[water_keys %in% perm_keys] <- 1.0
+    missing_perm <- !perm_keys %in% water_keys & !duplicated(perm_keys)
+    water_df <- rbind(water_df, perm_df[missing_perm, , drop = FALSE])
   }
   
   # Convert to binomial counts
